@@ -1,4 +1,4 @@
-# Menues – Smart Restaurant Management & Digital Transformation Platform (project name: DineFlow)
+# Menues – Smart Restaurant Management & Digital Transformation Platform
 
 A working demonstration of how a traditional restaurant becomes a digitally managed one. One shared data source connects the customer site, an **entrance kiosk** page, the staff dashboard, the kitchen display and admin/analytics.
 
