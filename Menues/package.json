@@ -1,0 +1,40 @@
+{
+  "name": "dineflow",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node server/server.mjs",
+    "launch": "node scripts/launch.mjs",
+    "stop": "node scripts/stop.mjs",
+    "reset": "node scripts/reset.mjs",
+    "dev": "vite",
+    "build": "vite build",
+    "test:engines": "node scripts/test-engines.mjs",
+    "test:server": "node scripts/test-server.mjs",
+    "test:e2e": "node scripts/e2e.cjs",
+    "test": "npm run test:engines && npm run test:server",
+    "online": "node scripts/online.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.119.0",
+    "lucide-react": "^1.69.0",
+    "qrcode.react": "^4.2.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-router-dom": "^7.18.5",
+    "recharts": "^3.10.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.4",
+    "@vitejs/plugin-react": "^6.2.1",
+    "tailwindcss": "^4.3.4",
+    "vite": "^8.3.6"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "optionalDependencies": {
+    "cloudflared": "^0.7.3"
+  }
+}
