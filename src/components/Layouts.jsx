@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
-import { ArrowLeft, BarChart3, ChefHat, ClipboardList, Cloud, CloudOff, LayoutDashboard, LogOut, RotateCcw, Settings, Table2, Utensils, WifiOff, Workflow, QrCode } from 'lucide-react'
+import { ArrowLeft, BarChart3, ChefHat, ClipboardList, Cloud, CloudOff, LayoutDashboard, LogOut, RotateCcw, Settings, Boxes, Brain, Gift, LayoutGrid, Table2, Utensils, WifiOff, Workflow, QrCode } from 'lucide-react'
 import { Brand, LogoMark } from './Brand.jsx'
 import { useStore } from '../lib/store.jsx'
 import { DEMO_ACCOUNTS } from '../lib/seed.js'
@@ -126,6 +126,10 @@ const NAV = {
     { to: '/admin', label: 'Overview', icon: LayoutDashboard, end: true },
     { to: '/admin/analytics', label: 'Analytics', icon: BarChart3 },
     { to: '/admin/menu', label: 'Menu', icon: Utensils },
+    { to: '/admin/inventory', label: 'Inventory', icon: Boxes },
+    { to: '/admin/floor-plan', label: 'Floor plan', icon: LayoutGrid },
+    { to: '/admin/prep-ai', label: 'Prep-time AI', icon: Brain },
+    { to: '/admin/loyalty', label: 'Loyalty', icon: Gift },
     { to: '/admin/tables', label: 'Tables & QR', icon: QrCode },
     { to: '/admin/settings', label: 'Kitchen & settings', icon: Settings },
     { to: '/staff', label: 'Staff dashboard', icon: ClipboardList },

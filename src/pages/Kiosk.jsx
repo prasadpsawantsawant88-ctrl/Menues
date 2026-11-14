@@ -153,7 +153,7 @@ function Register({ state, now, act, onDone, connected }) {
           </div>
         </div>
         <div className="flex gap-2">
-          {['Any', 'Indoor', 'Outdoor'].map((p) => <button key={p} onClick={() => setPreference(p)} className={`flex-1 rounded-full border py-3 text-sm font-bold ${preference === p ? 'border-brand-600 bg-brand-50 text-brand-700' : 'border-line bg-white'}`}>{p}</button>)}
+          {['Any', ...state.layout.zones.map((z) => z.name)].map((p) => <button key={p} onClick={() => setPreference(p)} className={`flex-1 rounded-full border py-3 text-sm font-bold ${preference === p ? 'border-brand-600 bg-brand-50 text-brand-700' : 'border-line bg-white'}`}>{p}</button>)}
         </div>
         <input className="input !py-3 text-base" placeholder="Name (optional)" value={name} onChange={(e) => setName(e.target.value)} maxLength={40} autoComplete="off" />
         <div className="rounded-2xl bg-brand-50 p-4">

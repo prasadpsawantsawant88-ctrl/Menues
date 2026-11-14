@@ -309,3 +309,70 @@ alter publication supabase_realtime add table queue_entries, tables, orders, ord
 -- Seed data: see SEED_DATA.sql
 -- Demo staff accounts are created in Supabase Auth (Dashboard → Authentication → Users),
 -- then given a role:  update auth.users set raw_app_meta_data = raw_app_meta_data || '{"role":"admin"}' where email = '...';
+
+-- ───────────────────────────────────────────────────────────────────────
+-- Inventory, recipes, loyalty, floor plan and prep-time model
+-- (the local demo keeps these inside the JSON database; this is the same shape for Supabase)
+-- ───────────────────────────────────────────────────────────────────────
+create table ingredients (
+  id             text primary key,
+  name           text not null,
+  unit           text not null check (unit in ('kg','L','pcs')),
+  stock          numeric not null default 0 check (stock >= 0),
+  reorder_level  numeric not null default 0,
+  cost_per_unit  numeric not null default 0,
+  supplier       text
+);
+create table recipe_lines (            -- raw material used by ONE portion of a dish
+  menu_item_id   text references menu_items(id) on delete cascade,
+  ingredient_id  text references ingredients(id),
+  qty            numeric not null check (qty > 0),
+  primary key (menu_item_id, ingredient_id)
+);
+create table stock_log (               -- every movement: sale, cancelled, purchase, waste, expired, correction, count
+  id             text primary key,
+  at             timestamptz not null default now(),
+  ingredient_id  text references ingredients(id),
+  change         numeric not null,
+  reason         text not null,
+  order_id       text,
+  note           text,
+  balance        numeric not null
+);
+alter table customers add column points int not null default 0;
+alter table customers add column lifetime_points int not null default 0;
+alter table customers add column visits int not null default 0;
+alter table customers add column total_spend numeric not null default 0;
+create table loyalty_log (
+  id           text primary key,
+  at           timestamptz not null default now(),
+  customer_id  text references customers(id),
+  points       int not null,
+  kind         text not null,          -- welcome, earn, redeem, adjust
+  balance      int not null,
+  order_id     text,
+  note         text
+);
+alter table orders add column discount numeric not null default 0;
+alter table orders add column reward_id text;
+alter table orders add column reward_points int not null default 0;
+alter table tables add column shape text default 'square';
+alter table tables add column x int; alter table tables add column y int;
+alter table tables add column w int; alter table tables add column h int;
+create table floor_zones (name text primary key, color text not null);
+create table floor_items (id text primary key, kind text, label text, x int, y int, w int, h int);
+create table prep_models (             -- latest trained model (weights as JSON) and its test accuracy
+  trained_at timestamptz primary key,
+  samples int, metrics jsonb, model jsonb
+);
+-- Admin only: ingredients, recipe_lines, stock_log, loyalty_log, prep_models (no public or staff policy).
+alter table ingredients  enable row level security;
+alter table recipe_lines enable row level security;
+alter table stock_log    enable row level security;
+alter table loyalty_log  enable row level security;
+alter table prep_models  enable row level security;
+create policy admin_ingredients on ingredients  for all using (app_role() = 'admin') with check (app_role() = 'admin');
+create policy admin_recipes     on recipe_lines for all using (app_role() = 'admin') with check (app_role() = 'admin');
+create policy admin_stock_log   on stock_log    for all using (app_role() = 'admin') with check (app_role() = 'admin');
+create policy admin_loyalty_log on loyalty_log  for all using (app_role() = 'admin') with check (app_role() = 'admin');
+create policy admin_models      on prep_models  for all using (app_role() = 'admin') with check (app_role() = 'admin');

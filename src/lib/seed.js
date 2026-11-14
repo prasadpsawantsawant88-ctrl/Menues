@@ -3,8 +3,11 @@
 // Everything here is SYNTHETIC DEMO DATA, not measured business results.
 
 import { MIN, makeRng, newSessionToken } from './util.js'
-import { createOrder, payOrder, setTaskStatus, joinQueue, allocateTable } from './actions.js'
-import { diningMinutes } from './engines.js'
+import { createOrder, payOrder, setTaskStatus, joinQueue, allocateTable, settleLoyalty } from './actions.js'
+import { DEFAULT_LOYALTY, account, addPoints } from './loyalty.js'
+import { refreshPortions } from './inventory.js'
+import { trainPrepModel } from './ml.js'
+import { diningMinutes, setPrepModel } from './engines.js'
 
 const HOUR = 60 * MIN
 const DAY = 24 * HOUR
@@ -73,15 +76,83 @@ export function baseSettings() {
     queueAlertThreshold: 6, // optional Power Automate alert when this many groups wait
     autoNoShow: true,
     reservationsEnabled: false,
+    useAiTimings: true, // estimates use the prep-time model trained on past orders (Admin → Prep-time AI)
+    loyalty: structuredClone(DEFAULT_LOYALTY),
   }
 }
 
+// [id, seats, zone, shape, x, y, width, height] on a 900 × 560 floor plan (editable in Admin → Floor plan).
 const TABLES = [
-  ['T01', 2, 'Indoor'], ['T02', 2, 'Indoor'], ['T03', 2, 'Window'], ['T04', 4, 'Indoor'], ['T05', 4, 'Indoor'],
-  ['T06', 4, 'Window'], ['T07', 4, 'Outdoor'], ['T08', 6, 'Indoor'], ['T09', 6, 'Outdoor'], ['T10', 8, 'Indoor'],
+  ['T01', 2, 'Indoor', 'round', 60, 170, 64, 64], ['T02', 2, 'Indoor', 'round', 160, 170, 64, 64], ['T03', 2, 'Window', 'round', 60, 40, 64, 64],
+  ['T04', 4, 'Indoor', 'rect', 270, 170, 110, 70], ['T05', 4, 'Indoor', 'rect', 270, 290, 110, 70], ['T06', 4, 'Window', 'rect', 230, 40, 110, 64],
+  ['T07', 4, 'Outdoor', 'rect', 640, 60, 100, 70], ['T08', 6, 'Indoor', 'rect', 60, 300, 130, 80], ['T09', 6, 'Outdoor', 'rect', 640, 200, 130, 80],
+  ['T10', 8, 'Indoor', 'rect', 60, 420, 160, 80],
 ]
 
+const LAYOUT = {
+  width: 900,
+  height: 560,
+  zones: [{ name: 'Indoor', color: '#0f9d8f' }, { name: 'Window', color: '#3b82f6' }, { name: 'Outdoor', color: '#f59e0b' }],
+  items: [
+    { id: 'L1', kind: 'kitchen', label: 'Kitchen', x: 430, y: 40, w: 170, h: 110 },
+    { id: 'L2', kind: 'bar', label: 'Bar', x: 450, y: 220, w: 50, h: 170 },
+    { id: 'L3', kind: 'washroom', label: 'Washroom', x: 530, y: 440, w: 90, h: 60 },
+    { id: 'L4', kind: 'entrance', label: 'Entrance', x: 330, y: 510, w: 130, h: 30 },
+    { id: 'L5', kind: 'label', label: 'Garden', x: 620, y: 30, w: 220, h: 30 },
+  ],
+}
+
+// Raw materials: [key, name, unit, stock, reorder level, cost per unit (₹), supplier]. Demo figures.
+const INGREDIENTS = [
+  ['paneer', 'Paneer', 'kg', 14, 5, 320, 'DairyFresh'], ['chicken', 'Chicken', 'kg', 18, 6, 220, 'Metro Meats'], ['mutton', 'Mutton', 'kg', 3.4, 3, 780, 'Metro Meats'],
+  ['fish', 'Fish fillet', 'kg', 1.6, 2, 520, 'Coastal Catch'], ['rice', 'Basmati rice', 'kg', 40, 10, 110, 'Grain House'], ['atta', 'Wheat flour (atta)', 'kg', 30, 8, 42, 'Grain House'],
+  ['maida', 'Refined flour (maida)', 'kg', 25, 8, 38, 'Grain House'], ['urad', 'Black lentils (urad)', 'kg', 9, 3, 130, 'Grain House'], ['tomato', 'Tomatoes', 'kg', 16, 6, 40, 'Mandi Fresh'],
+  ['onion', 'Onions', 'kg', 22, 8, 32, 'Mandi Fresh'], ['spinach', 'Spinach', 'kg', 5, 2, 60, 'Mandi Fresh'], ['peas', 'Green peas', 'kg', 6, 2, 90, 'Mandi Fresh'],
+  ['corn', 'Sweet corn', 'kg', 7, 2, 70, 'Mandi Fresh'], ['mixveg', 'Mixed vegetables', 'kg', 12, 4, 55, 'Mandi Fresh'], ['potato', 'Potatoes', 'kg', 20, 6, 28, 'Mandi Fresh'],
+  ['butter', 'Butter', 'kg', 8, 3, 520, 'DairyFresh'], ['cream', 'Fresh cream', 'L', 2.6, 3, 260, 'DairyFresh'], ['milk', 'Milk', 'L', 40, 12, 56, 'DairyFresh'],
+  ['yoghurt', 'Yoghurt', 'kg', 18, 6, 70, 'DairyFresh'], ['oil', 'Cooking oil', 'L', 25, 8, 140, 'Oil Depot'], ['spice', 'Spice mix (garam masala etc.)', 'kg', 4, 1, 650, 'Spice Bazaar'],
+  ['gingergarlic', 'Ginger-garlic paste', 'kg', 5, 2, 180, 'Mandi Fresh'], ['coffee', 'Coffee powder', 'kg', 0.4, 0.5, 900, 'Bean & Brew'], ['tea', 'Tea leaves', 'kg', 3, 1, 420, 'Bean & Brew'],
+  ['sugar', 'Sugar', 'kg', 20, 6, 44, 'Grain House'], ['lime', 'Limes', 'pcs', 120, 40, 4, 'Mandi Fresh'], ['mango', 'Mango pulp', 'kg', 7, 2, 150, 'Fruit Co'],
+  ['icecream', 'Vanilla ice cream', 'kg', 6, 2, 280, 'Frosty'], ['brownie', 'Brownie mix', 'kg', 4, 1, 360, 'Sweet Supply'], ['khoya', 'Khoya', 'kg', 4, 1.5, 420, 'DairyFresh'],
+  ['soda', 'Soda water', 'L', 30, 10, 30, 'Fizz Distributors'], ['rollsheets', 'Spring roll sheets', 'pcs', 150, 50, 3, 'Sweet Supply'],
+]
+
+// Dish recipes: quantity of each ingredient in ONE portion.
+const RECIPES = {
+  'Paneer Tikka': [['paneer', 0.15], ['yoghurt', 0.05], ['spice', 0.01], ['oil', 0.01], ['onion', 0.04]],
+  'Hara Bhara Kebab': [['spinach', 0.08], ['peas', 0.05], ['potato', 0.08], ['spice', 0.008], ['oil', 0.02]],
+  'Chicken Tikka': [['chicken', 0.2], ['yoghurt', 0.06], ['spice', 0.01], ['gingergarlic', 0.02], ['oil', 0.01]],
+  'Fish Amritsari': [['fish', 0.18], ['maida', 0.03], ['spice', 0.008], ['oil', 0.06], ['lime', 0.5]],
+  'Crispy Corn': [['corn', 0.15], ['maida', 0.02], ['oil', 0.05], ['onion', 0.03]],
+  'Veg Spring Roll': [['rollsheets', 3], ['mixveg', 0.12], ['oil', 0.05]],
+  'Dal Makhani': [['urad', 0.08], ['butter', 0.02], ['cream', 0.04], ['tomato', 0.08], ['gingergarlic', 0.01], ['spice', 0.008]],
+  'Paneer Butter Masala': [['paneer', 0.15], ['butter', 0.03], ['cream', 0.04], ['tomato', 0.15], ['onion', 0.05], ['spice', 0.01]],
+  'Kadai Paneer': [['paneer', 0.15], ['onion', 0.08], ['tomato', 0.1], ['spice', 0.012], ['oil', 0.02]],
+  'Palak Paneer': [['paneer', 0.12], ['spinach', 0.2], ['cream', 0.02], ['onion', 0.05], ['spice', 0.008]],
+  'Mixed Veg Curry': [['mixveg', 0.22], ['tomato', 0.1], ['onion', 0.06], ['oil', 0.02], ['spice', 0.008]],
+  'Butter Chicken': [['chicken', 0.22], ['butter', 0.03], ['cream', 0.05], ['tomato', 0.15], ['spice', 0.01]],
+  'Mutton Rogan Josh': [['mutton', 0.25], ['onion', 0.08], ['yoghurt', 0.05], ['spice', 0.015], ['oil', 0.03]],
+  'Butter Naan': [['maida', 0.09], ['yoghurt', 0.02], ['butter', 0.01]],
+  'Garlic Naan': [['maida', 0.09], ['butter', 0.01], ['gingergarlic', 0.01]],
+  'Tandoori Roti': [['atta', 0.08]],
+  'Laccha Paratha': [['atta', 0.1], ['butter', 0.02]],
+  'Stuffed Kulcha': [['maida', 0.1], ['potato', 0.06], ['onion', 0.03]],
+  'Veg Biryani': [['rice', 0.12], ['mixveg', 0.1], ['yoghurt', 0.03], ['oil', 0.02], ['spice', 0.01]],
+  'Chicken Biryani': [['rice', 0.12], ['chicken', 0.2], ['yoghurt', 0.04], ['oil', 0.02], ['spice', 0.012]],
+  'Jeera Rice': [['rice', 0.12], ['oil', 0.01]],
+  'Steamed Rice': [['rice', 0.12]],
+  'Cold Coffee': [['coffee', 0.01], ['milk', 0.2], ['sugar', 0.02], ['icecream', 0.03]],
+  'Masala Chai': [['tea', 0.005], ['milk', 0.1], ['sugar', 0.015]],
+  'Fresh Lime Soda': [['lime', 1.5], ['sugar', 0.02], ['soda', 0.25]],
+  'Mango Lassi': [['mango', 0.08], ['yoghurt', 0.15], ['sugar', 0.01]],
+  'Gulab Jamun': [['khoya', 0.06], ['sugar', 0.05], ['oil', 0.03]],
+  'Rasmalai': [['paneer', 0.06], ['milk', 0.15], ['sugar', 0.03]],
+  'Brownie with Ice Cream': [['brownie', 0.08], ['icecream', 0.08]],
+}
+
 const FIRST_NAMES = ['Aarav', 'Diya', 'Kabir', 'Meera', 'Rohan', 'Isha', 'Vikram', 'Ananya', 'Arjun', 'Saanvi', 'Neel', 'Tara']
+
+const ingredientId = (key) => 'I' + String(INGREDIENTS.findIndex((r) => r[0] === key) + 1).padStart(3, '0')
 
 function buildMenu() {
   const categories = [...new Set(MENU_ROWS.map((r) => r[0]))].map((name, i) => ({ id: 'C' + (i + 1), name, sort: i }))
@@ -97,6 +168,7 @@ function buildMenu() {
     complexity: r[7],
     description: r[8],
     options: r[9],
+    recipe: (RECIPES[r[1]] || []).map(([key, qty]) => ({ ingredientId: ingredientId(key), qty })),
     available: true,
     stock: null,
     image: null,
@@ -134,6 +206,11 @@ function buildHistory(state, popularity, now) {
   const hourWeights = [[11, 1], [12, 3], [13, 4], [14, 2], [15, 0.5], [18, 1], [19, 3], [20, 5], [21, 4], [22, 1]]
   const partyWeights = [[1, 0.05], [2, 0.35], [3, 0.15], [4, 0.25], [5, 0.08], [6, 0.09], [7, 0.02], [8, 0.01]]
   const menuWeights = state.menu.map((m) => [m, popularity[m.id]])
+  // How long dishes REALLY take in this synthetic kitchen. It differs from the standard times on the menu
+  // (some dishes are faster, some slower), grows with portions and complexity, and is slower at peak hours and
+  // weekends. The prep-time model has to discover this from the orders alone.
+  const truthRng = makeRng(77)
+  const dishFactor = Object.fromEntries(state.menu.map((m) => [m.id, 0.78 + truthRng() * 0.62]))
   let h = 0
 
   for (let d = DAYS; d >= 1; d--) {
@@ -207,7 +284,11 @@ function buildHistory(state, popularity, now) {
         const actuals = []
         chosen.forEach((m, k) => {
           const qty = 1 + (rng() < 0.3 ? 1 : 0) + (m.station === 'bread' && rng() < 0.6 ? 1 : 0)
-          const actual = Math.round(m.prepMin * (0.9 + rng() * 0.45) * 10) / 10
+          const when = type === 'preorder' ? seatedAt : createdAt + queueDelay * MIN
+          const hourNow = new Date(when).getHours()
+          const rush = (hourNow >= 12 && hourNow < 15) || (hourNow >= 19 && hourNow < 22)
+          const weekend = [0, 5, 6].includes(new Date(when).getDay())
+          const actual = Math.round(m.prepMin * dishFactor[m.id] * (1 + (qty - 1) * 0.08 * m.complexity) * (rush ? 1.15 : 1) * (weekend ? 1.07 : 1) * (0.93 + rng() * 0.14) * 10) / 10
           actuals.push(actual)
           subtotal += m.price * qty
           state.orderItems.push({
@@ -222,6 +303,7 @@ function buildHistory(state, popularity, now) {
             options: [],
             status: 'served',
             actualPrepMin: actual,
+            startedAt: type === 'preorder' ? seatedAt - Math.round(actual * MIN) : createdAt + Math.round(queueDelay * MIN),
           })
         })
         const tax = Math.round(subtotal * 0.05)
@@ -349,6 +431,24 @@ function buildLiveScenario(state, now) {
   notifyJoinLog(state)
 }
 
+// Loyalty balances for the 40 regular customers, built from their past paid orders with the same rules as live orders.
+function buildLoyaltyHistory(state, now) {
+  const rng = makeRng(909)
+  state.customers.forEach((c) => {
+    account(c)
+    addPoints(state, c, state.settings.loyalty.welcomeBonus, 'welcome', c.createdAt, { note: 'Welcome bonus' })
+  })
+  state.orders
+    .filter((o) => o.history && o.paymentStatus === 'paid')
+    .sort((a, b) => a.paidAt - b.paidAt)
+    .forEach((o) => settleLoyalty(state, o, o.paidAt))
+  // Some regulars have already spent points on a reward.
+  state.customers.forEach((c) => {
+    if (c.points >= 150 && rng() < 0.4) addPoints(state, c, -100, 'redeem', now - Math.round(rng() * 6 * DAY), { note: 'Reward: ₹50 off your bill' })
+  })
+  state.loyaltyLog.sort((a, b) => b.at - a.at)
+}
+
 function notifyJoinLog(state) {
   state.queue
     .filter((q) => ['Q021', 'Q022', 'Q023'].includes(q.id))
@@ -376,7 +476,7 @@ export function createSeedState(now = Date.now(), baseUrl = '') {
       { id: 'bread', name: 'Bread', chefs: 2 },
       { id: 'beverage', name: 'Beverage', chefs: 2 },
     ],
-    tables: TABLES.map(([id, capacity, zone]) => ({ id, capacity, zone, status: 'available', sessionId: null, heldFor: null })),
+    tables: TABLES.map(([id, capacity, zone, shape, x, y, w, h]) => ({ id, capacity, zone, shape, x, y, w, h, status: 'available', sessionId: null, heldFor: null })),
     categories,
     menu,
     customers: [],
@@ -387,12 +487,23 @@ export function createSeedState(now = Date.now(), baseUrl = '') {
     payments: [],
     tasks: [],
     notifications: [],
-    counters: { queue: 1, order: 0, orderItem: 0, payment: 0, task: 0, session: 0, customer: 0, notification: 0, menu: menu.length },
+    ingredients: INGREDIENTS.map(([, name, unit, stock, reorderLevel, costPerUnit, supplier], i) => ({ id: 'I' + String(i + 1).padStart(3, '0'), name, unit, stock, reorderLevel, costPerUnit, supplier })),
+    stockLog: [],
+    loyaltyLog: [],
+    layout: structuredClone(LAYOUT),
+    ml: null,
+    counters: { ingredient: INGREDIENTS.length, stockLog: 0, loyalty: 0, category: categories.length, queue: 1, order: 0, orderItem: 0, payment: 0, task: 0, session: 0, customer: 0, notification: 0, menu: menu.length },
   }
+  refreshPortions(state)
   buildHistory(state, popularity, now)
+  buildLoyaltyHistory(state, now)
+  state.ml = trainPrepModel(state, now) // learned from the 10 days of past orders above
+  // The live scenario below is scheduled on standard times; the learned model takes over from the next order.
+  setPrepModel(null)
   // History uses its own id space; the live counters start fresh so live ids stay short.
   state.counters.session = 0
   buildLiveScenario(state, now)
+  setPrepModel(state.ml)
   return state
 }
 

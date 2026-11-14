@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Bell, Clock, QrCode, Hand, LogIn, MessageSquare, Plus, Star, UserPlus, X } from 'lucide-react'
 import { DashboardShell, RequireRole } from '../components/Layouts.jsx'
+import { FloorMap, FloorLegend } from '../components/FloorMap.jsx'
 import QueueQr from '../components/QueueQr.jsx'
 import { Empty, Field, Modal, Notice, Stat, StatusChip, Confidence } from '../components/ui.jsx'
 import { useStore, useNow } from '../lib/store.jsx'
@@ -141,6 +142,7 @@ function StaffInner() {
           {/* Tables */}
           <section className="xl:col-span-2">
             <h2 className="mb-3 text-lg font-extrabold">Tables</h2>
+            <div className="mb-3 space-y-2"><FloorMap layout={state.layout} tables={state.tables} /><FloorLegend layout={state.layout} /></div>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-2">
               {state.tables.map((t) => {
                 const session = state.sessions.find((s) => s.id === t.sessionId)

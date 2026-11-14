@@ -39,3 +39,16 @@ One server holds **one state**; every screen on every device is a live view of i
 
 ## Security notes and limits
 HttpOnly cookies, login throttling, request-size limits, path-traversal guard, no secrets in browser code. This is a LAN demo server: it serves plain http, has no per-user accounts and no audit log.
+
+
+## Back-office modules (new)
+
+| File | Role |
+|---|---|
+| `src/lib/inventory.js` | Recipes, stock checks, deduction and restock, portions left, daily usage |
+| `src/lib/ml.js` | Ridge-regression prep-time model: training, honest 80/20 scoring, prediction |
+| `src/lib/loyalty.js` | Points, tiers, rewards keyed by phone-number customer |
+| `src/lib/admin-actions.js` | Admin-only actions: ingredients, stock, categories, floor plan, model, loyalty |
+| `src/pages/AdminOps.jsx`, `src/components/FloorMap.jsx` | Inventory, floor-plan editor, prep-time AI, loyalty screens; SVG floor map |
+
+`engines.js` asks the active model for dish durations (`itemDuration`), so wait estimates, the pre-order scheduler and the kitchen plan all use learned times when a model exists. The server strips recipes, ingredient prices, stock and loyalty data from every non-admin view. `myLoyalty` is a read-only action authorised by the guest's personal secret.

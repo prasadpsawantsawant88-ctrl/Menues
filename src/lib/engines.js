@@ -4,6 +4,7 @@
 // 3. Kitchen plan: station lanes, dish estimates, whole-order estimates
 // 4. Pre-order scheduler (schedule backwards from the expected seating time)
 
+import { predictPrep } from './ml.js'
 import { MIN } from './util.js'
 
 // ───────────────────────── Waiting-time prediction ─────────────────────────
@@ -150,7 +151,15 @@ export function suggestEntryForTable(state, table) {
 // ───────────────────────── Kitchen plan ─────────────────────────
 
 // Time one order line occupies a chef. More portions take longer, harder dishes scale worse.
-export function itemDuration(menuItem, qty = 1) {
+// When the prep-time model is trained it supplies the minutes (learned from past orders); otherwise the
+// standard time of the dish is used.
+let activePrepModel = null
+export function setPrepModel(model) {
+  activePrepModel = model
+}
+export function itemDuration(menuItem, qty = 1, at = Date.now()) {
+  const learned = predictPrep(activePrepModel, menuItem, qty, at)
+  if (learned != null) return Math.max(1, Math.ceil(learned))
   const batch = 1 + (qty - 1) * 0.1 * (menuItem.complexity || 2)
   return Math.max(1, Math.ceil(menuItem.prepMin * batch))
 }

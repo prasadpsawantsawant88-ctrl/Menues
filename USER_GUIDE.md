@@ -9,3 +9,14 @@
 **Admin** (`/admin`, admin/9999). Analytics, menu, tables & QR (print table QR codes), chefs per station, kiosk PIN, public base URL, session lifetime. *Reset demo data* in the sidebar.
 
 **Kiosk.** See `KIOSK_GUIDE.md`. Exit: tap the logo 5 times, enter the PIN.
+
+
+## Admin: changing the restaurant (new)
+
+Sign in at `/admin` (admin / 9999). Everything below saves to the shared database and appears on every screen at once.
+
+1. **Add a dish or change a price**: Menu → *Add dish* or the pencil icon. Fill name, category, station, price and prep time. In *Recipe* add each raw material and how much ONE portion uses; cost and margin update as you type.
+2. **Stock**: Inventory → *Receive* when a delivery arrives, *Waste* for spoilage, *Count* after a shelf count. Items marked *Running low* or *Out of stock* are at the top of your shopping list. When something runs out, dishes that need it show *Sold out* to customers.
+3. **Floor plan**: Floor plan → drag tables, click one to change seats, shape or zone, add zones such as *Terrace*, then *Save plan*.
+4. **Prep-time AI**: shows how accurate the learned cooking times are. *Retrain now* after a busy week; untick the box to go back to standard times.
+5. **Loyalty**: Loyalty → set points per rupee, welcome bonus, tiers and rewards; search a member by phone or name; *Adjust* to give an apology bonus. Guests see their points on their own queue page (QR from the kiosk) and choose a reward when paying for a pre-order.

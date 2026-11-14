@@ -195,6 +195,51 @@ const reset = (await api('GET', '/api/state')).json
 ok('back to the seeded evening (Q024 free again)', !reset.queue.some((q) => q.id === 'Q024') && reset.queue.filter((q) => q.status === 'waiting').length === 3)
 ok('wrong secret rejected', (await fetch(BASE + '/api/reset', { method: 'POST', headers: { 'x-dineflow-secret': 'nope' } })).status === 403)
 
+console.log('\nInventory, loyalty, floor plan and AI timing over the API')
+const adm2 = await login('admin', '9999')
+const stf2 = await login('staff', '1111')
+const kit2 = await login('kitchen', '2222')
+const adminView = (await api('GET', '/api/state', null, adm2.cookie)).json
+const staffView2 = (await api('GET', '/api/state', null, stf2.cookie)).json
+const kitView = (await api('GET', '/api/state', null, kit2.cookie)).json
+const pubView = (await api('GET', '/api/state')).json
+ok('admin receives ingredients, stock log and the model', adminView.ingredients.length > 20 && adminView.stockLog.length > 0 && adminView.ml?.samples > 100 && adminView.menu.every((m) => 'recipe' in m))
+for (const [who, v] of [['staff', staffView2], ['kitchen', kitView], ['public', pubView]]) {
+  ok(`${who} never receives recipes, ingredient prices or loyalty balances`, !v.ingredients && !v.stockLog && !v.loyaltyLog && v.menu.every((m) => !('recipe' in m)) && !JSON.stringify(v).includes('costPerUnit'))
+}
+ok('every viewer still sees sold-out status and the floor plan', pubView.menu.some((m) => 'portionsLeft' in m) && pubView.layout.zones.length >= 3 && pubView.tables.every((t) => 'x' in t))
+ok('public orders carry no customer ids', pubView.orders.every((o) => !('customerId' in o)))
+for (const name of ['upsertIngredient', 'receiveStock', 'saveFloorPlan', 'retrainPrepModel', 'adjustPoints', 'saveLoyaltyConfig', 'upsertCategory']) {
+  ok(`${name}: public refused, staff refused, kitchen refused`, (await act(name, {})).status === 401 && (await act(name, {}, stf2.cookie)).status === 403 && (await act(name, {}, kit2.cookie)).status === 403)
+}
+const ing = adminView.ingredients[0]
+const rcv = await act('receiveStock', { ingredientId: ing.id, qty: 2, costPerUnit: 111 }, adm2.cookie)
+ok('admin can receive stock', rcv.json.ok && (await api('GET', '/api/state', null, adm2.cookie)).json.ingredients.find((i) => i.id === ing.id).stock === Math.round((ing.stock + 2) * 1000) / 1000)
+const newDish = await act('upsertMenuItem', { item: { name: 'Test Thali', categoryId: adminView.categories[0].id, station: adminView.stations[0].id, price: 321, prepMin: 9, complexity: 2, veg: true, available: true, recipe: [{ ingredientId: ing.id, qty: 0.1 }] } }, adm2.cookie)
+ok('admin can add a dish with a recipe', newDish.json.ok)
+const thali = (await api('GET', '/api/state')).json.menu.find((m) => m.name === 'Test Thali')
+ok('new dish appears on the public menu at once with portions left', thali?.price === 321 && thali.portionsLeft > 0 && !('recipe' in thali))
+await act('upsertMenuItem', { item: { ...adminView.menu[0], price: 777 } }, adm2.cookie)
+ok('price change reaches the public menu', (await api('GET', '/api/state')).json.menu.find((m) => m.id === adminView.menu[0].id).price === 777)
+const fp = adminView.tables.map(({ id, capacity, zone, shape, x, y, w, h }) => ({ id, capacity, zone, shape, x, y, w, h }))
+ok('floor plan with a bad zone is refused', !(await act('saveFloorPlan', { tables: fp.map((t, i) => (i ? t : { ...t, zone: 'Nowhere' })) }, adm2.cookie)).json.ok)
+ok('floor plan can be saved by admin', (await act('saveFloorPlan', { tables: fp.map((t, i) => (i ? t : { ...t, x: 600, y: 400 })), items: adminView.layout.items }, adm2.cookie)).json.ok)
+ok('retrain works for admin', (await act('retrainPrepModel', {}, adm2.cookie)).json.metrics?.maeMl > 0)
+
+// loyalty through the personal link
+const jn = (await act('joinQueue', { phone: '9811111111', partySize: 2, name: 'Rewards Rita' })).json
+const rita = jn.entry.sessionToken
+const mine = (await act('myLoyalty', { session: rita })).json
+ok('guest sees only their own balance (welcome bonus)', mine.ok && mine.account.points >= 50 && !JSON.stringify(mine).includes('9811111111'))
+ok('no link → no loyalty data', (await act('myLoyalty', {})).status === 403 && (await act('myLoyalty', { session: 'y'.repeat(32) })).status === 403)
+const revBefore2 = (await api('GET', '/api/state')).json.meta.rev
+await act('myLoyalty', { session: rita })
+ok('reading rewards does not create a new revision', (await api('GET', '/api/state')).json.meta.rev === revBefore2)
+ok('guest cannot redeem a reward they cannot afford', !(await act('createOrder', { type: 'preorder', entryId: jn.entry.id, session: rita, rewardId: 'R3', items: [{ menuItemId: dish, qty: 1 }] })).json.ok)
+ok('guest cannot adjust points', (await act('adjustPoints', { customerId: 'C0001', points: 9999, session: rita })).status === 401)
+const custs = (await api('GET', '/api/state', null, adm2.cookie)).json.customers
+ok('admin sees members, staff and public do not', custs.length > 30 && staffView2.customers.length === 0 && pubView.customers.length === 0)
+
 console.log('\nLogin throttling and limits')
 let last
 for (let i = 0; i < 12; i++) last = await api('POST', '/api/login', { username: 'staff', pin: 'bad' + i })

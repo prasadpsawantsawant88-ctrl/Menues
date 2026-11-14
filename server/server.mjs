@@ -17,6 +17,7 @@ import os from 'node:os'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { ACTIONS, housekeeping } from '../src/lib/actions.js'
+import { setPrepModel } from '../src/lib/engines.js'
 import { createSeedState, DEMO_ACCOUNTS } from '../src/lib/seed.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -66,10 +67,12 @@ function lanUrls() {
 // ───────────────────────── state + persistence ─────────────────────────
 
 let state = loadOrSeed()
+setPrepModel(state.settings.useAiTimings === false ? null : state.ml || null)
 function loadOrSeed() {
   try {
     const parsed = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'))
-    if (parsed?.meta?.version === 1) return parsed
+    // A database from before inventory, loyalty and the floor-plan editor is replaced by fresh demo data.
+    if (parsed?.meta?.version === 1 && parsed.ingredients && parsed.layout) return parsed
   } catch { /* first start or unreadable file: seed fresh data */ }
   const fresh = createSeedState(Date.now(), '')
   fs.writeFileSync(DB_FILE, JSON.stringify(fresh))
@@ -132,15 +135,18 @@ function view(role) {
     sessions: state.sessions.filter((s) => s.status === 'active'),
   }
   const { kioskPin, ...settings } = state.settings // only the admin ever receives the kiosk PIN
-  if (role === 'staff') return { ...base, settings, customers: [] } // staff see phones (masked on screen) and personal links
+  // Stock levels, supplier prices, recipes and loyalty balances are for the admin only. Dishes keep "portionsLeft" so sold-out shows.
+  const { ingredients, stockLog, loyaltyLog, ...rest0 } = base
+  const slim = { ...rest0, menu: base.menu.map(({ recipe, ...m }) => m) }
+  if (role === 'staff') return { ...slim, settings, customers: [] } // staff see phones (masked on screen) and personal links
   // kitchen and the public never receive phone numbers, personal-link secrets or payment records
   return {
-    ...base,
+    ...slim,
     settings,
     customers: [],
     payments: [],
     queue: base.queue.map(({ phone, name, customerId, sessionToken, ...rest }) => rest),
-    orders: base.orders.map(({ clientRequestId, ...rest }) => rest),
+    orders: base.orders.map(({ clientRequestId, customerId, ...rest }) => rest),
   }
 }
 
@@ -154,9 +160,11 @@ function viewJson(role) {
   return json
 }
 
-const PUBLIC_ACTIONS = new Set(['joinQueue', 'openSession', 'ackCall', 'cancelEntry', 'createOrder', 'payOrder', 'cancelOrderItem', 'seatWalkIn'])
+const PUBLIC_ACTIONS = new Set(['joinQueue', 'openSession', 'ackCall', 'cancelEntry', 'createOrder', 'payOrder', 'cancelOrderItem', 'seatWalkIn', 'myLoyalty'])
 const KITCHEN_ACTIONS = new Set(['setTaskStatus', 'delayTask', 'setTaskPriority', 'startTaskNow', 'reportUnavailable'])
-const ADMIN_ACTIONS = new Set(['upsertMenuItem', 'deleteMenuItem', 'setAvailability', 'upsertTable', 'deleteTable', 'updateSettings', 'updateStation'])
+const ADMIN_ACTIONS = new Set(['upsertMenuItem', 'deleteMenuItem', 'setAvailability', 'upsertTable', 'deleteTable', 'updateSettings', 'updateStation',
+  'upsertIngredient', 'deleteIngredient', 'receiveStock', 'adjustStock', 'setStockCount', 'upsertCategory', 'deleteCategory',
+  'saveFloorPlan', 'retrainPrepModel', 'setPrepModelEnabled', 'adjustPoints', 'saveLoyaltyConfig'])
 
 function safeEqual(a, b) {
   const x = Buffer.from(String(a)), y = Buffer.from(String(b))
@@ -180,6 +188,7 @@ function authorize(role, name, args) {
     const entry = state.queue.find((q) => q.id === entryId)
     return ownsEntry(entry, args.session, now) ? null : { status: 403, error: 'Open your personal link (the QR code from the entrance) to do this' }
   }
+  if (name === 'myLoyalty') return state.queue.some((q) => ownsEntry(q, args.session, now)) ? null : { status: 403, error: 'Open your personal link to see your rewards' }
   if (name === 'ackCall' || name === 'cancelEntry') return needsOwner(args.entryId)
   if (name === 'createOrder' && args.type === 'preorder') return needsOwner(args.entryId)
   if (name === 'payOrder' || name === 'cancelOrderItem') {
@@ -197,7 +206,7 @@ function sanitize(role, name, args) {
   const { session, ...rest } = args
   if (name === 'joinQueue') return { phone: rest.phone, partySize: rest.partySize, name: rest.name, preference: rest.preference, source: 'self' }
   if (name === 'cancelEntry') return { entryId: rest.entryId, by: 'customer' }
-  if (name === 'openSession') return { session }
+  if (name === 'openSession' || name === 'myLoyalty') return { session }
   return rest
 }
 
@@ -395,6 +404,7 @@ async function handleApi(req, res, pathname) {
       safeArgs.mode = 'demo' // simulated payment only
     }
     try {
+      if (name === 'myLoyalty') return sendJson(res, 200, { ok: true, rev: state.meta.rev, ...ACTIONS[name](state, safeArgs, Date.now()) }) // read-only: no new revision
       const result = commit((draft, now) => ACTIONS[name](draft, safeArgs, now))
       if (name === 'payOrder' && safeArgs.outcome === 'fail') sendAlert('payment_failed', { order: result.order?.orderNo || safeArgs.orderId, amount: result.order?.total })
       return sendJson(res, 200, { ok: true, rev: state.meta.rev, ...scrubResult(role, name, result) })

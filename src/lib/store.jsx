@@ -12,6 +12,10 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { ACTIONS, housekeeping } from './actions.js'
 import { createSeedState, DEMO_ACCOUNTS } from './seed.js'
+import { setPrepModel } from './engines.js'
+
+// Wait-time estimates in the browser use the same learned prep-time model the server trained.
+const useModel = (st) => setPrepModel(st && st.settings.useAiTimings !== false ? st.ml || null : null)
 import { syncEnabled, pullRemote, pushRemote, subscribeRemote } from './sync.js'
 
 const KEY = 'dineflow-state-v1'
@@ -105,6 +109,7 @@ function ServerStore({ children }) {
         const next = JSON.parse(e.data)
         if (!ref.current || next.meta.rev >= ref.current.meta.rev) {
           ref.current = next
+          useModel(next)
           setState(next)
           waiters.current = waiters.current.filter((w) => (next.meta.rev >= w.rev ? (w.resolve(), false) : true))
         }
@@ -222,7 +227,7 @@ function saveLocal(state) {
 function LocalStore({ children }) {
   const [state, setState] = useState(() => {
     const existing = loadLocal()
-    if (existing) return existing
+    if (existing && existing.ingredients && existing.layout) { useModel(existing); return existing } // older saved data is replaced by the new demo data
     const fresh = createSeedState(Date.now(), window.location.origin)
     saveLocal(fresh)
     return fresh
@@ -238,6 +243,7 @@ function LocalStore({ children }) {
 
   const adopt = useCallback((next) => {
     ref.current = next
+    useModel(next)
     setState(next)
   }, [])
 

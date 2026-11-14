@@ -10,6 +10,7 @@ import Staff from './pages/Staff.jsx'
 import Kitchen from './pages/Kitchen.jsx'
 import Analytics from './pages/Analytics.jsx'
 import HowItWorks from './pages/HowItWorks.jsx'
+import { AdminInventory, AdminPrepAI, AdminFloorPlan, AdminLoyalty } from './pages/AdminOps.jsx'
 import { AdminMenu, AdminOverview, AdminSettings, AdminTables } from './pages/Admin.jsx'
 
 export default function App() {
@@ -28,6 +29,10 @@ export default function App() {
       <Route path="/admin/menu" element={<AdminMenu />} />
       <Route path="/admin/tables" element={<AdminTables />} />
       <Route path="/admin/analytics" element={<Analytics />} />
+      <Route path="/admin/inventory" element={<AdminInventory />} />
+      <Route path="/admin/prep-ai" element={<AdminPrepAI />} />
+      <Route path="/admin/floor-plan" element={<AdminFloorPlan />} />
+      <Route path="/admin/loyalty" element={<AdminLoyalty />} />
       <Route path="/admin/settings" element={<AdminSettings />} />
       <Route path="/how-it-works" element={<HowItWorks />} />
       <Route path="*" element={<Navigate to="/" replace />} />

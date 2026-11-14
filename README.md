@@ -43,6 +43,16 @@ PHONE KIOSK:     http://192.168.1.20:5173/kiosk
 
 QR codes never use `localhost`: they use the public tunnel link (`START_ONLINE`), else the laptop's Wi-Fi address (or **Public base URL** in Admin / `PUBLIC_BASE_URL` in `.env`).
 
+## Admin: what the owner can change (new)
+
+Sign in as `admin` / `9999`, then use the left menu. The full plan is in **[ADMIN_PLAN.md](ADMIN_PLAN.md)**.
+
+* **Menu**: add dishes, change prices, categories, and a **recipe** per dish (raw materials per portion, with live cost and margin).
+* **Inventory**: raw materials, stock levels, deliveries, waste, stock counts. Paid orders use stock up; a dish whose ingredient runs out shows **Sold out / Only N left** to customers.
+* **Floor plan**: drag tables and areas, change seats, shapes and zones; staff see it live.
+* **Prep-time AI**: wait estimates are learned from past orders (ridge regression); shows accuracy vs standard times, retrain, on/off.
+* **Loyalty by phone number**: points, tiers and rewards; guests see their balance on their own queue page and pick a reward when paying for a pre-order.
+
 ## What is implemented
 
 | Area | Features |
@@ -61,7 +71,7 @@ QR codes never use `localhost`: they use the public tunnel link (`START_ONLINE`)
 
 ## Security model (local server)
 
-- Roles (staff / kitchen / admin) are checked **on the server** with an HttpOnly cookie; the kitchen and public never receive phone numbers, session secrets or payment records.
+- Roles (staff / kitchen / admin) are checked **on the server** with an HttpOnly cookie; the kitchen and public never receive phone numbers, session secrets or payment records, and staff, kitchen and public never receive recipes, ingredient prices, stock history or loyalty balances.
 - Customers can act only on their own entry: the personal secret is the proof. Duplicate phone numbers are refused (an existing link is never handed over).
 - No payment provider and no card details exist in the app; the Pay button is a simulation.
 - Login throttling, request size limits, no path traversal. Change the PINs in `.env` before using it anywhere but a demo.
@@ -69,8 +79,8 @@ QR codes never use `localhost`: they use the public tunnel link (`START_ONLINE`)
 ## Tests
 
 ```bash
-npm test            # 79 logic checks + 68 server/API/security checks
-npm run build && node scripts/e2e.cjs   # 26-check multi-device browser test (needs Playwright)
+npm test            # 116 logic checks + 94 server/API/security checks
+npm run build && node scripts/e2e.cjs   # 36-check multi-device browser test (needs Playwright)
 ```
 
 ## Honest limitations
@@ -79,7 +89,9 @@ npm run build && node scripts/e2e.cjs   # 26-check multi-device browser test (ne
 - **Screen pinning is an OS feature.** DineFlow explains Android App Pinning / iOS Guided Access but cannot bypass OS restrictions.
 - **The `.bat`/`.command` launchers were written for Windows/macOS but only the Linux `.sh` path could be run in the build environment.** The shared Node scripts they call were tested.
 - **Not tested against live accounts:** Power Automate, Supabase and the Cloudflare tunnel (the sandbox had no access to Cloudflare; the tunnel plumbing was tested with a stand-in) (no credentials/network in the build environment). Each fails safe: the demo keeps working.
-- This is a LAN demo server, not hardened internet hosting. Waiting-time and kitchen estimates are rule-based. Reservations are not implemented.
+- This is a LAN demo server, not hardened internet hosting. Prep-time estimates are learned from past orders once at least 40 dishes are finished (otherwise rule-based); the demo history is generated, so its accuracy figures are optimistic. Reservations are not implemented.
+- **Loyalty points are demo-grade:** one account per phone number, no phone verification (no SMS exists), so anyone who knows a number could register with it. Real use would need verification.
+- **Inventory is simple:** stock is taken at payment; ingredient yield, partial portions and supplier ordering are not modelled.
 - `DATABASE_SCHEMA.sql`/`SEED_DATA.sql` describe the production database; the demo uses a JSON file. They were reviewed, not executed against a live database.
 
 ## Troubleshooting

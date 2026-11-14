@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useLocation, useParams } from 'react-router-dom'
-import { BellRing, MessageSquare, PartyPopper, Users } from 'lucide-react'
+import { Gift, BellRing, MessageSquare, PartyPopper, Users } from 'lucide-react'
 import { CustomerShell } from '../components/Layouts.jsx'
 import MenuBrowser from '../components/MenuBrowser.jsx'
 import { OrderCard } from '../components/OrderStatus.jsx'
@@ -8,6 +8,32 @@ import { Confidence, Modal, Notice, StatusChip } from '../components/ui.jsx'
 import { useStore, useNow } from '../lib/store.jsx'
 import { expectedSeatAtForEntry, predictEntry, predictWait } from '../lib/engines.js'
 import { fmtTime, MIN } from '../lib/util.js'
+
+// The guest's own points, tier and rewards. Only loads through the personal link (the server checks it).
+function LoyaltyCard({ entryId }) {
+  const { act, state } = useStore()
+  const [acc, setAcc] = useState(null)
+  const orders = state.orders.length
+  useEffect(() => {
+    act('myLoyalty', {}).then((r) => setAcc(r.ok ? r.account : null))
+  }, [entryId, orders, state.settings.loyalty])
+  if (!acc || !acc.enabled) return null
+  const goal = acc.nextTier
+  return (
+    <section className="rounded-3xl bg-gradient-to-br from-amber-50 to-orange-50 p-4 ring-1 ring-amber-200">
+      <div className="flex items-center justify-between">
+        <h2 className="flex items-center gap-2 font-extrabold text-amber-900"><Gift size={17} /> Your rewards</h2>
+        <span className="chip bg-amber-200 text-amber-900">{acc.tier}</span>
+      </div>
+      <div className="mt-1 text-3xl font-extrabold text-amber-900">{acc.points} <span className="text-sm font-semibold">points</span></div>
+      <div className="text-xs text-amber-800">{acc.visits} visit{acc.visits === 1 ? '' : 's'}{acc.multiplier > 1 ? ` · earning ×${acc.multiplier}` : ''}{goal ? ` · ${goal.pointsToGo} more points to ${goal.name}` : ''}</div>
+      <div className="mt-2 text-xs text-amber-900">
+        {acc.rewards.map((r) => <div key={r.id} className={r.affordable ? 'font-semibold' : 'opacity-60'}>{r.affordable ? '✓' : '·'} {r.name}: {r.points} points</div>)}
+        <div className="mt-1">Choose a reward when you pay for a pre-order. Points are saved against your phone number.</div>
+      </div>
+    </section>
+  )
+}
 
 export default function QueueTracker() {
   const { token } = useParams()
@@ -112,6 +138,8 @@ export default function QueueTracker() {
         )}
 
         {error && <Notice tone="bad">{error}</Notice>}
+
+        <LoyaltyCard entryId={entry.id} />
 
         {/* Pre-orders */}
         {orders.length > 0 && (

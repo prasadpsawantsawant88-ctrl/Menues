@@ -55,7 +55,7 @@ export default function JoinQueue() {
 
         <Field label="Seating preference (optional)">
           <div className="flex gap-2">
-            {['Any', 'Indoor', 'Outdoor', 'Window'].map((p) => (
+            {['Any', ...state.layout.zones.map((z) => z.name)].map((p) => (
               <button type="button" key={p} onClick={() => setPreference(p)} className={`flex-1 rounded-xl border py-2 text-sm font-semibold ${preference === p ? 'border-brand-600 bg-brand-50 text-brand-700' : 'border-slate-300'}`}>{p}</button>
             ))}
           </div>

@@ -1,10 +1,10 @@
-// Shared digital menu + cart + checkout used by the queue page (pre-order), the QR table page and /menu.
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Clock, Minus, Plus, ShoppingBag, Trash2, Leaf, Zap } from 'lucide-react'
 import { useStore, useNow } from '../lib/store.jsx'
 import { computeKitchenPlan, estimateDish, estimateOrder, itemDuration, stationLoad } from '../lib/engines.js'
 import { fmtMoney, fmtTime, MIN } from '../lib/util.js'
 import { lineUnitPrice, orderTotals } from '../lib/actions.js'
+import { isOrderable } from '../lib/inventory.js'
 import { DishImage, Field, Modal, Notice, VegMark } from './ui.jsx'
 import PaymentModal from './PaymentModal.jsx'
 
@@ -29,6 +29,8 @@ export default function MenuBrowser({ mode, entry, table, expectedSeatAt, onPaid
   const [cartOpen, setCartOpen] = useState(false)
   const [payingOrderId, setPayingOrderId] = useState(null)
   const [error, setError] = useState('')
+  const [loyalty, setLoyalty] = useState(null) // the guest's own rewards (pre-order only, through the personal link)
+  const [rewardId, setRewardId] = useState('')
   const requestId = useRef(`req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
   const canOrder = mode !== 'browse'
 
@@ -50,9 +52,17 @@ export default function MenuBrowser({ mode, entry, table, expectedSeatAt, onPaid
     .map((l) => ({ ...l, item: menuById(l.menuItemId) }))
     .filter((l) => l.item)
     .map((l) => ({ ...l, unitPrice: lineUnitPrice(l.item, l.options) }))
-  const totals = orderTotals(state.settings, lines)
+  const reward = loyalty?.enabled ? loyalty.rewards.find((r) => r.id === rewardId && r.affordable) : null
+  const subtotal = lines.reduce((sum, l) => sum + l.unitPrice * l.qty, 0)
+  const discount = reward ? Math.min(reward.value, subtotal) : 0
+  const totals = orderTotals(state.settings, lines, discount)
   const count = lines.reduce((s, l) => s + l.qty, 0)
   const orderEstimate = useMemo(() => estimateOrder(plan, lines.map((l) => ({ item: l.item, qty: l.qty })), now), [plan, cart, now])
+
+  useEffect(() => {
+    if (mode !== 'preorder') return
+    act('myLoyalty', {}).then((r) => r.ok && setLoyalty(r.account))
+  }, [mode, payingOrderId])
 
   const addLine = (item, options = [], instructions = '', qty = 1) => {
     const sig = JSON.stringify([item.id, options.map((o) => o.label), instructions])
@@ -77,6 +87,7 @@ export default function MenuBrowser({ mode, entry, table, expectedSeatAt, onPaid
       type: mode,
       entryId: entry?.id,
       tableId: table?.id,
+      rewardId: reward ? reward.id : undefined,
       clientRequestId: requestId.current, // double-tap safe: the same request returns the same order
       items: lines.map((l) => ({ menuItemId: l.menuItemId, qty: l.qty, options: l.options, instructions: l.instructions })),
     })
@@ -135,7 +146,8 @@ export default function MenuBrowser({ mode, entry, table, expectedSeatAt, onPaid
         {visible.map((item) => {
           const est = estimateDish(plan, item, 1, now)
           const inCart = lines.filter((l) => l.menuItemId === item.id).reduce((s, l) => s + l.qty, 0)
-          const unavailable = !item.available
+          const unavailable = !isOrderable(item)
+          const soldOut = item.available && item.portionsLeft === 0
           return (
             <div key={item.id} className={`flex gap-3 py-4 ${unavailable ? 'opacity-50' : ''}`}>
               <DishImage item={item} className="h-24 w-24" />
@@ -145,7 +157,7 @@ export default function MenuBrowser({ mode, entry, table, expectedSeatAt, onPaid
                 <div className="mt-1.5 text-sm font-extrabold">{fmtMoney(item.price)}</div>
                 <div className="mt-1 flex items-center gap-1 text-xs text-slate-500">
                   <Clock size={12} />
-                  {unavailable ? 'Unavailable right now' : est ? (
+                  {unavailable ? (soldOut ? 'Sold out today' : 'Unavailable right now') : item.portionsLeft != null && item.portionsLeft <= 5 ? <span className="font-semibold text-amber-700">Only {item.portionsLeft} left</span> : est ? (
                     <span>Prep {item.prepMin} min{est.backlogMin > 0 ? ` + ${est.backlogMin} min queue` : ''} · <b className="text-slate-700">est. ~{est.totalMin} min</b></span>
                   ) : '—'}
                 </div>
@@ -208,8 +220,18 @@ export default function MenuBrowser({ mode, entry, table, expectedSeatAt, onPaid
 
             {lines.length > 0 && (
               <>
+                {loyalty?.enabled && loyalty.rewards.length > 0 && (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm">
+                    <div className="font-bold text-amber-900">Your rewards · {loyalty.points} points ({loyalty.tier})</div>
+                    <select className="input mt-2 !py-2" value={rewardId} onChange={(e) => setRewardId(e.target.value)}>
+                      <option value="">Do not use a reward</option>
+                      {loyalty.rewards.map((r) => <option key={r.id} value={r.id} disabled={!r.affordable}>{r.name} · {r.points} points{r.affordable ? '' : ' (not enough yet)'}</option>)}
+                    </select>
+                  </div>
+                )}
                 <div className="rounded-xl bg-slate-50 p-3 text-sm">
                   <div className="flex justify-between"><span>Subtotal</span><span>{fmtMoney(totals.subtotal)}</span></div>
+                  {discount > 0 && <div className="flex justify-between text-emerald-700"><span>Reward: {reward.name}</span><span>−{fmtMoney(discount)}</span></div>}
                   <div className="flex justify-between text-slate-600"><span>GST ({state.settings.gstPercent}%)</span><span>{fmtMoney(totals.tax)}</span></div>
                   <div className="mt-1 flex justify-between text-base font-extrabold"><span>Total</span><span>{fmtMoney(totals.total)}</span></div>
                 </div>

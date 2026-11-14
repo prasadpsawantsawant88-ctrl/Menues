@@ -54,3 +54,16 @@ from (values
 join menu_categories c on c.name = v.cat
 on conflict do nothing;
 
+
+-- ───────────────────────────────────────────────────────────────────────
+-- Sample inventory, recipe and loyalty rows (the demo app generates the full set: 32 ingredients,
+-- 29 recipes, ~100 members and 10 days of orders, see src/lib/seed.js)
+-- ───────────────────────────────────────────────────────────────────────
+insert into ingredients (id, name, unit, stock, reorder_level, cost_per_unit, supplier) values
+ ('I001','Paneer','kg',13.55,5,320,'DairyFresh'),
+ ('I002','Fish fillet','kg',1.6,3,540,'Coastal Catch'),
+ ('I003','Fresh cream','L',2.6,3,260,'DairyFresh'),
+ ('I004','Coffee powder','kg',0.4,1,900,'Roastery Co');
+-- insert into recipe_lines (menu_item_id, ingredient_id, qty) values ('<paneer tikka id>','I001',0.15);
+insert into customers (id, phone, name, points, lifetime_points, visits, total_spend) values
+ ('C0001','9000010000','Aarav',864,864,9,7787);

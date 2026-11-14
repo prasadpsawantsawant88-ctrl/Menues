@@ -13,7 +13,12 @@ import {
   findSlot,
   diningMinutes,
   predictWait,
+  setPrepModel,
 } from './engines.js'
+import { trainPrepModel, newSamplesSince } from './ml.js'
+import { applyOrderItems, assertInStock, isOrderable, refreshPortions } from './inventory.js'
+import { DEFAULT_LOYALTY, account, addPoints, pointsForSpend, publicAccount } from './loyalty.js'
+import { ADMIN_ACTIONS_IMPL } from './admin-actions.js'
 
 const ACTIVE_ENTRY = ['waiting', 'called']
 
@@ -131,6 +136,8 @@ export function joinQueue(state, { phone, partySize, name, preference, source = 
   if (!customer) {
     customer = { id: nextId(state, 'customer', 'C', 4), phone: p, name: cleanText(name, 40), createdAt: now }
     state.customers.push(customer)
+    const loyalty = state.settings.loyalty
+    if (loyalty?.enabled && loyalty.welcomeBonus > 0) addPoints(state, account(customer), loyalty.welcomeBonus, 'welcome', now, { note: 'Welcome bonus' })
   } else if (name && !customer.name) customer.name = cleanText(name, 40)
 
   const entry = {
@@ -139,7 +146,7 @@ export function joinQueue(state, { phone, partySize, name, preference, source = 
     phone: p,
     name: cleanText(name, 40) || customer.name || '',
     partySize: party,
-    preference: ['Any', 'Indoor', 'Outdoor', 'Window'].includes(preference) ? preference : 'Any',
+    preference: ['Any', ...zoneNames(state)].includes(preference) ? preference : 'Any',
     status: 'waiting',
     source,
     // Personal link secret: long, random, never contains the phone number. Expires.
@@ -398,13 +405,14 @@ export function lineUnitPrice(menuItem, options = []) {
   return menuItem.price + options.reduce((s, o) => s + (o.price || 0), 0)
 }
 
-export function orderTotals(settings, lines) {
+export function orderTotals(settings, lines, discount = 0) {
   const subtotal = lines.reduce((s, l) => s + l.unitPrice * l.qty, 0)
-  const tax = Math.round((subtotal * settings.gstPercent) / 100)
-  return { subtotal, tax, total: subtotal + tax }
+  const off = Math.min(subtotal, Math.max(0, discount)) // a reward can never make the bill negative
+  const tax = Math.round(((subtotal - off) * settings.gstPercent) / 100) // GST on the amount actually paid
+  return { subtotal, discount: off, tax, total: subtotal - off + tax }
 }
 
-export function createOrder(state, { type, entryId, tableId, items, clientRequestId, note }, now) {
+export function createOrder(state, { type, entryId, tableId, items, clientRequestId, note, rewardId }, now) {
   if (clientRequestId) {
     const dup = state.orders.find((o) => o.clientRequestId === clientRequestId)
     if (dup) return { order: dup, duplicate: true } // double tap / retry → same order
@@ -429,7 +437,8 @@ export function createOrder(state, { type, entryId, tableId, items, clientReques
     if (!menu) throw new Error('A dish in your cart no longer exists')
     const qty = Number(line.qty)
     if (!Number.isInteger(qty) || qty < 1 || qty > 20) throw new Error(`Invalid quantity for ${menu.name}`)
-    if (!menu.available || (menu.stock != null && menu.stock < qty)) throw new Error(`${menu.name} is not available right now`)
+    if (!isOrderable(menu) || (menu.stock != null && menu.stock < qty)) throw new Error(`${menu.name} is not available right now`)
+    if (menu.portionsLeft != null && menu.portionsLeft < qty) throw new Error(`Only ${menu.portionsLeft} ${menu.name} left today`)
     const options = (line.options || []).map((o) => ({ group: o.group, label: o.label, price: Number(o.price) || 0 }))
     return {
       menu,
@@ -439,7 +448,19 @@ export function createOrder(state, { type, entryId, tableId, items, clientReques
       unitPrice: lineUnitPrice(menu, options),
     }
   })
-  const totals = orderTotals(state.settings, lines)
+  assertInStock(state, lines) // the whole cart together, shared ingredients included
+
+  // Loyalty reward chosen at checkout: the points are only taken when the payment succeeds.
+  const customerId = entry?.customerId || session?.customerId || null
+  let reward = null
+  if (rewardId) {
+    const catalog = state.settings.loyalty?.rewards || []
+    reward = catalog.find((r) => r.id === rewardId)
+    const customer = state.customers.find((c) => c.id === customerId)
+    if (!state.settings.loyalty?.enabled || !reward) throw new Error('That reward is not available')
+    if (!customer || account(customer).points < reward.points) throw new Error('You do not have enough points for this reward')
+  }
+  const totals = orderTotals(state.settings, lines, reward ? reward.value : 0)
 
   const order = {
     id: nextId(state, 'order', 'O', 4),
@@ -449,7 +470,9 @@ export function createOrder(state, { type, entryId, tableId, items, clientReques
     queueEntryId: entry?.id || null,
     tableId: table?.id || entry?.tableId || null,
     sessionId: session?.id || entry?.sessionId || null,
-    customerId: entry?.customerId || session?.customerId || null,
+    customerId,
+    rewardId: reward?.id || null,
+    rewardPoints: reward?.points || 0,
     partySize: entry?.partySize || session?.partySize || null,
     note: cleanText(note, 200),
     status: 'pending_payment',
@@ -514,10 +537,13 @@ export function payOrder(state, { orderId, mode = 'demo', outcome = 'success', i
   const items = state.orderItems.filter((i) => i.orderId === order.id)
   for (const item of items) {
     const menu = state.menu.find((m) => m.id === item.menuItemId)
-    if (!menu || !menu.available || (menu.stock != null && menu.stock < item.qty)) {
+    if (!menu || !isOrderable(menu) || (menu.stock != null && menu.stock < item.qty)) {
       throw new Error(`${item.name} just became unavailable. Please remove it from your cart.`)
     }
   }
+  assertInStock(state, items.map((i) => ({ menu: state.menu.find((m) => m.id === i.menuItemId), qty: i.qty })))
+  const rewardCustomer = order.rewardPoints ? state.customers.find((c) => c.id === order.customerId) : null
+  if (order.rewardPoints && (!rewardCustomer || account(rewardCustomer).points < order.rewardPoints)) throw new Error('Your points balance changed. Please remove the reward and try again.')
   let entry = null
   if (order.type === 'preorder') {
     entry = findEntry(state, order.queueEntryId)
@@ -541,6 +567,8 @@ export function payOrder(state, { orderId, mode = 'demo', outcome = 'success', i
     }
     item.status = 'queued'
   })
+  applyOrderItems(state, items, -1, now, order.id, 'sale') // raw materials are used up the moment the order is paid
+  settleLoyalty(state, order, now)
 
   // Kitchen tasks: pre-orders are SCHEDULED for later, table orders go straight to the kitchen.
   const immediate = order.type === 'qr' || entry?.status === 'seated'
@@ -554,7 +582,7 @@ export function payOrder(state, { orderId, mode = 'demo', outcome = 'success', i
       emoji: item.emoji,
       qty: item.qty,
       station: item.station,
-      durationMin: itemDuration(menu, item.qty),
+      durationMin: itemDuration(menu, item.qty, now),
       status: immediate ? 'received' : 'scheduled',
       priority: 'normal',
       override: false,
@@ -601,6 +629,7 @@ export function cancelOrderItem(state, { orderItemId }, now) {
     refundItem(state, order, item.unitPrice * item.qty)
     const menu = state.menu.find((m) => m.id === item.menuItemId)
     if (menu && menu.stock != null) menu.stock += item.qty
+    applyOrderItems(state, [item], +1, now, order.id, 'cancelled') // nothing was cooked: ingredients go back
   }
   syncOrderStatus(state, order.id, now)
   const stillLive = state.orderItems.some((i) => i.orderId === order.id && i.status !== 'cancelled')
@@ -635,6 +664,7 @@ export function setTaskStatus(state, { taskId, status }, now) {
   if (status === 'preparing') {
     if (task.status === 'scheduled') task.override = true // started early by kitchen staff
     task.startedAt = now
+    if (item) item.startedAt = now // kept so the prep-time model knows when the dish was cooked
   }
   if (status === 'ready') {
     task.readyAt = now
@@ -701,6 +731,43 @@ export function reportUnavailable(state, { taskId }, now) {
   return { task }
 }
 
+// ───────────────────────── loyalty ─────────────────────────
+
+// After a successful payment: spend the reward points, earn new ones, count the visit.
+export function settleLoyalty(state, order, now) {
+  const loyalty = state.settings.loyalty
+  const customer = state.customers.find((c) => c.id === order.customerId)
+  if (!loyalty?.enabled || !customer) return
+  account(customer)
+  if (order.rewardPoints) addPoints(state, customer, -order.rewardPoints, 'redeem', now, { orderId: order.id, note: `Reward: ₹${order.discount} off` })
+  const earned = pointsForSpend(state.settings, customer, order.subtotal - (order.discount || 0)) // uses the tier as it was before this order
+  if (earned > 0) {
+    addPoints(state, customer, earned, 'earn', now, { orderId: order.id, note: `Order ${order.orderNo}` })
+    order.pointsEarned = earned
+  }
+  customer.totalSpend += order.total
+  const visitKey = order.queueEntryId || order.sessionId || order.id
+  if (customer.lastVisitKey !== visitKey) {
+    customer.visits += 1
+    customer.lastVisitKey = visitKey
+  }
+  customer.lastVisitAt = now
+}
+
+// A customer reads their own balance with their personal link. Read-only.
+export function myLoyalty(state, { session }, now) {
+  const entry = state.queue.find((q) => q.sessionToken && session && q.sessionToken === session)
+  if (!entry || (entry.sessionExpiresAt && entry.sessionExpiresAt < now)) throw new Error('This link is not valid')
+  const customer = state.customers.find((c) => c.id === entry.customerId)
+  if (!customer) throw new Error('No rewards account found')
+  return { account: publicAccount(state, customer) }
+}
+
+export function zoneNames(state) {
+  const fromLayout = (state.layout?.zones || []).map((z) => z.name)
+  return fromLayout.length ? fromLayout : [...new Set(state.tables.map((t) => t.zone))]
+}
+
 // ───────────────────────── admin ─────────────────────────
 
 export function upsertMenuItem(state, { item }, now) {
@@ -719,11 +786,27 @@ export function upsertMenuItem(state, { item }, now) {
     complexity: Math.min(5, Math.max(1, Number(item.complexity) || 2)),
     stock: item.stock === '' || item.stock == null ? null : Number(item.stock),
     available: item.available !== false,
+    recipe: cleanRecipe(state, item.recipe),
   }
+  if (!state.categories.some((c) => c.id === clean.categoryId)) throw new Error('Choose a category')
   const idx = state.menu.findIndex((m) => m.id === item.id)
   if (idx >= 0) state.menu[idx] = { ...state.menu[idx], ...clean }
   else state.menu.push({ ...clean, id: 'M' + pad(nextCounter(state, 'menu'), 3), emoji: clean.emoji || '🍽️', options: clean.options || [] })
+  refreshPortions(state)
   return {}
+}
+
+// Recipe lines: only real ingredients, positive quantities, one line per ingredient.
+function cleanRecipe(state, recipe = []) {
+  const out = []
+  for (const r of recipe) {
+    if (!state.ingredients.some((i) => i.id === r.ingredientId)) throw new Error('A recipe uses an ingredient that does not exist')
+    const qty = Number(r.qty)
+    if (!(qty > 0) || qty > 1000) throw new Error('Recipe quantities must be greater than zero')
+    if (out.some((o) => o.ingredientId === r.ingredientId)) throw new Error('An ingredient appears twice in the recipe')
+    out.push({ ingredientId: r.ingredientId, qty })
+  }
+  return out
 }
 
 function nextCounter(state, key) {
@@ -755,7 +838,7 @@ export function upsertTable(state, { table }, now) {
   if (existing) {
     existing.capacity = capacity
     existing.zone = table.zone || existing.zone
-  } else state.tables.push({ id, capacity, zone: table.zone || 'Indoor', status: 'available', sessionId: null, heldFor: null })
+  } else state.tables.push({ id, capacity, zone: table.zone || zoneNames(state)[0], shape: 'square', x: 20, y: 20, w: 70, h: 70, status: 'available', sessionId: null, heldFor: null }) // placed top-left; drag it into position in Floor plan
   return {}
 }
 
@@ -795,6 +878,16 @@ export function updateStation(state, { id, chefs }, now) {
 
 export function housekeeping(state, now) {
   let changed = false
+
+  // Prep-time model: learn from finished dishes. Retrain once 25 new ones have piled up.
+  if (!state.ml || newSamplesSince(state, state.ml) >= 25) {
+    const model = trainPrepModel(state, now)
+    if (model) {
+      state.ml = model
+      changed = true
+    }
+  }
+  setPrepModel(state.settings.useAiTimings === false ? null : state.ml || null)
 
   // Cleaning finished → table available again.
   state.tables.forEach((t) => {
@@ -876,7 +969,9 @@ export const ACTIONS = {
   deleteTable,
   updateSettings,
   updateStation,
+  myLoyalty,
+  ...ADMIN_ACTIONS_IMPL,
 }
 
 // Re-exported for the UI.
-export { computeKitchenPlan, findSlot }
+export { computeKitchenPlan, findSlot, refreshPortions, DEFAULT_LOYALTY }
